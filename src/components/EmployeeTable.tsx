@@ -1,12 +1,15 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Employee, DepartmentInfo } from '../types';
-import { Trash2, UserPlus, Search, Filter, GripVertical } from 'lucide-react';
+import { Trash2, UserPlus, Search, Filter, GripVertical, Home } from 'lucide-react';
 
 interface EmployeeTableProps {
   employees: Employee[];
   setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   departments: DepartmentInfo[];
   titles: string[];
+  selectedId: string | null;
+  setSelectedId: (id: string | null) => void;
+  onGoHome: () => void;
 }
 
 const Resizer = ({ colKey, onMouseDown }: { colKey: string; onMouseDown: (key: string, e: React.MouseEvent) => void }) => (
@@ -74,7 +77,10 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
   employees, 
   setEmployees, 
   departments, 
-  titles 
+  titles,
+  selectedId,
+  setSelectedId,
+  onGoHome
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [tempSearchTerm, setTempSearchTerm] = useState('');
@@ -225,12 +231,21 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
   };
 
   const handleAdd = () => {
+    if (!selectedId) {
+      alert('請先點選一位員工作為上級主管');
+      return;
+    }
+    const selectedEmployee = employees.find(e => e.id === selectedId);
+    if (!selectedEmployee) return;
+
     const newId = `emp-${Date.now()}`;
     const newEmployee: Employee = {
       id: newId,
       name: '新成員',
       title: titles[0] || '專員',
-      department: departments[0]?.name || '未分類',
+      department: selectedEmployee.department,
+      departmentCode: selectedEmployee.departmentCode,
+      parentId: selectedId,
     };
     setEmployees(prev => [...prev, newEmployee]);
   };
@@ -338,7 +353,14 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
     <div className="flex flex-col h-full bg-white select-none">
       <div className="p-4 border-b border-black/5 flex items-center justify-between bg-gray-50/50">
         <div className="flex items-center gap-4 flex-1">
-          <h2 className="text-sm font-bold uppercase tracking-widest opacity-60">人員設定總表</h2>
+          <button 
+            onClick={onGoHome}
+            className="flex items-center gap-2 px-3 py-1.5 bg-white border border-black/10 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-black/5 transition-all shadow-sm"
+          >
+            <Home size={14} />
+            首頁
+          </button>
+          <h2 className="text-sm font-bold uppercase tracking-widest opacity-60 ml-2">人員設定總表</h2>
           <div className="relative flex-1 max-w-md">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-30" />
             <input 
@@ -396,10 +418,14 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
 
           <button 
             onClick={handleAdd}
-            className="flex items-center gap-2 px-4 py-1.5 bg-indigo-600 text-white text-xs font-bold uppercase tracking-widest rounded-full hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
+            className={`flex items-center gap-2 px-4 py-1.5 text-white text-xs font-bold uppercase tracking-widest rounded-full transition-all shadow-lg ${
+              selectedId 
+                ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' 
+                : 'bg-gray-400 cursor-not-allowed shadow-none opacity-50'
+            }`}
           >
             <UserPlus size={14} />
-            新增成員
+            新增部屬
           </button>
         </div>
       </div>
@@ -560,9 +586,19 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-black/5 bg-white">
-            {paginatedEmployees.map(emp => (
-              <tr key={emp.id} className="hover:bg-indigo-50/30 transition-colors group select-text">
-                <td className="px-3 py-2 text-center border-r border-black/5">
+            {paginatedEmployees.map(emp => {
+              const isSelected = emp.id === selectedId;
+              return (
+                <tr 
+                  key={emp.id} 
+                  onClick={() => setSelectedId(isSelected ? null : emp.id)}
+                  className={`transition-colors group select-text cursor-pointer ${
+                    isSelected 
+                      ? 'bg-indigo-50 ring-2 ring-inset ring-indigo-500 z-10 relative' 
+                      : 'hover:bg-indigo-50/30'
+                  }`}
+                >
+                  <td className="px-3 py-2 text-center border-r border-black/5">
                   <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${emp.isExecutive ? 'bg-indigo-600 text-white' : emp.depth === -1 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 opacity-50'}`}>
                     L{emp.depth + 1}
                   </span>
@@ -707,8 +743,9 @@ const EmployeeTable: React.FC<EmployeeTableProps> = ({
                     <Trash2 size={12} />
                   </button>
                 </td>
-              </tr>
-            ))}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {filteredEmployees.length === 0 && (

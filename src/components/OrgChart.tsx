@@ -15,9 +15,9 @@ interface OrgChartProps {
   showDepartmentCodes?: boolean;
   showEmployeeIds?: boolean;
   isSubChart?: boolean;
-  onSwapEmployees?: (id1: string, id2: string) => void;
   selectedId?: string | null;
   onDeselect?: () => void;
+  companyName?: string;
 }
 
 const OrgChart: React.FC<OrgChartProps> = ({ 
@@ -31,9 +31,9 @@ const OrgChart: React.FC<OrgChartProps> = ({
   showDepartmentCodes = false,
   showEmployeeIds = false,
   isSubChart = false,
-  onSwapEmployees,
   selectedId,
-  onDeselect
+  onDeselect,
+  companyName
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -112,7 +112,7 @@ const OrgChart: React.FC<OrgChartProps> = ({
         }
 
         if (children.length === 0) {
-          const totalHeight = nodeHeight + asstHeight + 10 * scale; // Reduced from 20
+          const totalHeight = nodeHeight + 10 * scale; // Removed asstHeight
           nodeInfo.set(n.data.id, { 
             width: nodeWidth, 
             height: totalHeight, 
@@ -140,7 +140,7 @@ const OrgChart: React.FC<OrgChartProps> = ({
         const totalReservedWidth = colWidths.reduce((a, b) => a + b, 0) + (colWidths.length - 1) * groupGap;
         const childrenHeight = rowHeights.reduce((a, b) => a + b, 0) + (rowHeights.length - 1) * currentStaffGapY;
 
-        const totalHeight = nodeHeight + asstHeight + currentStaffGapY + childrenHeight;
+        const totalHeight = nodeHeight + currentStaffGapY + childrenHeight;
 
         nodeInfo.set(n.data.id, { 
           width: nodeWidth,
@@ -204,7 +204,7 @@ const OrgChart: React.FC<OrgChartProps> = ({
           
           const allChildrenNoManager = children.every(c => !c.data.isManagerLabel && (!c.children || c.children.length === 0));
           const currentStaffGapY = allChildrenNoManager ? 22.5 * scale : 30 * scale;
-          let currentYBase = y + nodeHeight + info.asstHeight + currentStaffGapY;
+          let currentYBase = y + nodeHeight + currentStaffGapY; // Removed info.asstHeight
 
           const rowHeights: number[] = [];
           // Pre-calculate row heights
@@ -351,59 +351,6 @@ const OrgChart: React.FC<OrgChartProps> = ({
           return `M${parent.x + nodeWidth / 2},${parent.y} H${d.x - nodeWidth / 2}`;
         });
 
-      // 5. Draw Nodes
-      let dragStarted = false;
-      const drag = d3.drag<any, any>()
-        .clickDistance(10)
-        .filter((event) => event.button === 0) // Only allow left-click to start drag/selection
-        .on('start', function(event, d) {
-          dragStarted = false;
-          d3.select(this).raise().attr('cursor', 'grabbing');
-          onNodeClick?.(d.data);
-        })
-        .on('drag', function(event) {
-          dragStarted = true;
-          d3.select(this).attr('transform', `translate(${event.x - nodeWidth / 2},${event.y - nodeHeight / 2})`);
-        })
-        .on('end', function(event, d) {
-          d3.select(this).attr('cursor', 'pointer');
-          
-          // If it was just a click or very small movement, don't try to swap
-          const moveDist = Math.sqrt((event.x - d.x)**2 + (event.y - d.y)**2);
-          if (!dragStarted || moveDist < 10) {
-            d3.select(this).transition().duration(200).attr('transform', `translate(${d.x - nodeWidth / 2},${d.y - nodeHeight / 2})`);
-            return;
-          }
-
-          const dropX = event.x;
-          const dropY = event.y;
-          
-          let closestNode: any = null;
-          let minDistance = Infinity;
-          
-          allNodes.forEach(other => {
-            if (other.data.id === d.data.id) return;
-            if (other.data.parentId !== d.data.parentId) return;
-            
-            const dx = other.x - dropX;
-            const dy = other.y - dropY;
-            const distance = Math.sqrt(dx*dx + dy*dy);
-            
-            // If overlapping significantly (threshold reduced for better precision)
-            if (distance < nodeWidth * 0.5 && distance < minDistance) {
-              minDistance = distance;
-              closestNode = other;
-            }
-          });
-          
-          if (closestNode) {
-            onSwapEmployees?.(d.data.id, closestNode.data.id);
-          } else {
-            // Snap back
-            d3.select(this).transition().duration(200).attr('transform', `translate(${d.x - nodeWidth / 2},${d.y - nodeHeight / 2})`);
-          }
-        });
-
       const nodes = g.selectAll('.node')
         .data(allNodes)
         .enter()
@@ -411,7 +358,6 @@ const OrgChart: React.FC<OrgChartProps> = ({
         .attr('class', 'node')
         .attr('transform', (d: any) => `translate(${d.x - nodeWidth / 2},${d.y - nodeHeight / 2})`)
         .style('cursor', 'pointer')
-        .call(drag as any)
         .on('mouseover', function() {
           d3.select(this).select('.main-rect')
             .attr('stroke-width', 2)
@@ -428,6 +374,10 @@ const OrgChart: React.FC<OrgChartProps> = ({
           event.stopPropagation();
           if (event.defaultPrevented) return;
           onNodeClick?.(d.data);
+        })
+        .on('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
         });
 
       nodes.append('rect')
@@ -509,7 +459,11 @@ const OrgChart: React.FC<OrgChartProps> = ({
         .attr('font-family', '"PMingLiU", "serif"')
         .attr('font-size', `${10 * scale}px`)
         .attr('font-weight', 'bold')
-        .attr('fill', '#000')
+        .attr('fill', (d: any) => {
+          const target = d.data.proxyId ? employees.find(e => e.id === d.data.proxyId) : d.data;
+          const name = target?.name || d.data.name;
+          return name === '新員工' ? '#ff0000' : '#000';
+        })
         .text((d: any) => {
           const target = d.data.proxyId ? employees.find(e => e.id === d.data.proxyId) : d.data;
           let name = target?.name || d.data.name;
@@ -520,16 +474,16 @@ const OrgChart: React.FC<OrgChartProps> = ({
           return showEmployeeIds && empId ? `${base} [${empId}]` : base;
         });
 
-      // Subordinate Count (Headcount excluding Manager Labels/Proxies)
+      // Subordinate Count (Headcount including all members)
       const getRealGroupSize = (node: OrgNode): number => {
-        let count = node.isManagerLabel ? 0 : 1;
+        let count = 1;
         const visited = new Set<string>();
         const find = (id: string) => {
           if (visited.has(id)) return;
           visited.add(id);
           employees.forEach(emp => {
             if (emp.parentId === id) {
-              if (!emp.isManagerLabel) count++;
+              count++;
               find(emp.id);
             }
           });
@@ -560,6 +514,21 @@ const OrgChart: React.FC<OrgChartProps> = ({
         .attr('fill', '#fff')
         .attr('font-size', `${8 * scale}px`)
         .text((d: any) => getRealGroupSize(d.data));
+
+      // 5. Draw Company/Department Name in Top Right
+      const titleText = isSubChart ? data.department : companyName;
+      if (titleText) {
+        svg.append('text')
+          .attr('x', width - 40 * scale)
+          .attr('y', 60 * scale)
+          .attr('text-anchor', 'end')
+          .attr('font-family', '"PMingLiU", "serif"')
+          .attr('font-size', `${24 * scale}px`)
+          .attr('font-weight', 'bold')
+          .attr('fill', '#141414')
+          .attr('opacity', 0.8)
+          .text(titleText);
+      }
     };
 
     updateChart();

@@ -45,7 +45,7 @@ import EmployeeTable from './components/EmployeeTable';
 type ViewMode = { type: 'main' } | { type: 'sub'; rootId: string } | { type: 'table' };
 
 const INITIAL_DATA: Employee[] = [
-  { id: '1', name: '張大明', title: '執行長', department: '總經理室', departmentCode: 'GM', isExecutive: true, canBeProxy: true, isManagerLabel: false, subordinatesPerRow: 5 },
+  { id: '1', name: '張大明', title: '執行長', department: '總經理室', departmentCode: 'GM', isExecutive: true, canBeProxy: true, isManagerLabel: false, subordinatesPerRow: 5, memberType: '經營層' },
 ];
 
 const INITIAL_SETTINGS: AppSettings = {
@@ -70,6 +70,7 @@ const INITIAL_SETTINGS: AppSettings = {
     { name: '班長', color: '#E9D8FD' }, // 淡紫色
     { name: '基層', color: '#FFFFFF' }
   ],
+  companyName: '公司名稱',
 };
 
 const CM_TO_PX = 37.7952755906;
@@ -102,18 +103,18 @@ function ManagerNavItem({
             if (e.button !== 0) return;
             setViewMode({ type: 'sub', rootId: manager.id });
           }}
-          className={`flex-1 flex items-center gap-2 p-2 rounded-lg transition-all text-xs ${
+          className={`flex-1 flex items-center gap-1.5 p-1.5 rounded-lg transition-all text-[12px] ${
             isActive
               ? 'bg-[#141414] text-white shadow-md' 
               : 'hover:bg-black/5 text-black/60'
           }`}
         >
-          <GitBranch size={14} />
+          <GitBranch size={12} />
           <span className="truncate">{manager.name} {manager.department}</span>
         </button>
       </div>
       {hasChildren && isExpanded && (
-        <div className="space-y-1 ml-4 border-l border-black/5">
+        <div className="space-y-0.5 ml-3 border-l border-black/5">
           {manager.managerChildren.map((child: any) => (
             <ManagerNavItem 
               key={child.id} 
@@ -139,19 +140,22 @@ export default function App() {
   const [showStorage, setShowStorage] = useState(false);
   const [showNewConfirm, setShowNewConfirm] = useState(false);
   const [tempSettings, setTempSettings] = useState({ 
-    departments: '', 
-    titles: '',
+    departments: [] as { name: string, code: string }[], 
+    titles: [] as string[],
     memberTypes: [] as { name: string, color: string }[],
     canvasWidth: 33.867,
     canvasHeight: 19.05,
     showDepartmentCodes: false,
     showEmployeeIds: false,
-    displayFilters: ['all']
+    displayFilters: ['all'],
+    companyName: ''
   });
   const [viewMode, setViewMode] = useState<ViewMode>({ type: 'main' });
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [isEraserMode, setIsEraserMode] = useState(false);
   const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [isSwapMode, setIsSwapMode] = useState(false);
+  const [defaultAddType, setDefaultAddType] = useState('基層');
   const [exportViewId, setExportViewId] = useState<string>('current');
   const [isDashboardExpanded, setIsDashboardExpanded] = useState(true);
   const [zoom, setZoom] = useState(0.8);
@@ -231,7 +235,7 @@ export default function App() {
       if (saved.versionDate) setVersionDate(saved.versionDate);
       setEmployees(saved.employees);
       setAnnotations(saved.annotations);
-      setSettings(saved.settings);
+      setSettings({ ...INITIAL_SETTINGS, ...saved.settings });
     }
   }, []);
 
@@ -388,6 +392,31 @@ export default function App() {
     employees.find(e => e.id === selectedId), 
   [employees, selectedId]);
 
+  const handleNodeClick = (node: Employee) => {
+    if (isSwapMode && selectedId && selectedId !== node.id) {
+      const selected = employees.find(e => e.id === selectedId);
+      if (selected && selected.parentId === node.parentId) {
+        // Swap sortOrder
+        const selectedOrder = selected.sortOrder ?? 0;
+        const nodeOrder = node.sortOrder ?? 0;
+        
+        const newEmployees = employees.map(e => {
+          if (e.id === selectedId) return { ...e, sortOrder: nodeOrder };
+          if (e.id === node.id) return { ...e, sortOrder: selectedOrder };
+          return e;
+        });
+        setEmployees(newEmployees);
+        setIsSwapMode(false);
+        return;
+      } else {
+        alert('請選擇同一位主管底下的成員進行順序調整');
+        setIsSwapMode(false);
+        return;
+      }
+    }
+    setSelectedId(node.id);
+  };
+
   const handleAddEmployee = () => {
     if (!selectedId || !selectedEmployee) {
       alert('請先點選一位員工作為上級主管');
@@ -428,7 +457,7 @@ export default function App() {
       department: selectedEmployee.department,
       departmentCode: selectedEmployee.departmentCode,
       parentId: selectedId,
-      memberType: settings.memberTypes[3]?.name || '基層',
+      memberType: defaultAddType,
       sortOrder: maxSortOrder + 1
     };
 
@@ -448,7 +477,7 @@ export default function App() {
     }
 
     setEmployees(nextEmployees);
-    setSelectedId(newId);
+    // setSelectedId(newId); // Removed to maintain selection on the parent
   };
 
   const calculateTreeSize = (root: OrgNode): { width: number, height: number } => {
@@ -569,6 +598,15 @@ export default function App() {
 
     let finalUpdates = { ...updates };
 
+    // Restrict only one root (parentId === undefined)
+    if (updates.hasOwnProperty('parentId') && updates.parentId === undefined) {
+      const otherRoots = employees.filter(e => !e.parentId && e.id !== selectedId);
+      if (otherRoots.length > 0) {
+        alert('組織圖只能有一位頂層主管（無直屬主管）。請先為其他頂層人員設定主管。');
+        return;
+      }
+    }
+
     // Cycle detection: cannot select a descendant as a parent
     if (updates.parentId && currentEmp) {
       const isDescendant = (parentId: string, targetId: string): boolean => {
@@ -583,6 +621,16 @@ export default function App() {
       }
     }
     
+    // Proxy logic: when a proxy is selected, clear name/ID and update title
+    if (updates.proxyId && updates.proxyId !== currentEmp?.proxyId) {
+      const proxy = employees.find(e => e.id === updates.proxyId);
+      if (proxy) {
+        finalUpdates.name = '';
+        finalUpdates.employeeId = '';
+        finalUpdates.title = proxy.title;
+      }
+    }
+
     // Auto-link department code
     if (updates.department) {
       const deptInfo = settings.departments.find(d => d.name === updates.department);
@@ -593,6 +641,22 @@ export default function App() {
 
     // Special Assistant logic: mutually exclusive with sub-page roles
     if (updates.isSpecialAssistant === true) {
+      // Check if has subordinates
+      const hasSubordinates = employees.some(e => e.parentId === selectedId);
+      if (hasSubordinates) {
+        alert('底下有帶人的成員，不能擔任特助');
+        return;
+      }
+
+      // Check limit of 2
+      const parentId = selectedEmployee.parentId;
+      if (parentId) {
+        const assistants = employees.filter(e => e.parentId === parentId && e.isSpecialAssistant && e.id !== selectedId);
+        if (assistants.length >= 2) {
+          alert('每個主管最多只能擁有 2 位特助');
+          return;
+        }
+      }
       finalUpdates.isSubPage = false;
       finalUpdates.isExecutive = false;
     } else if (updates.isSubPage === true || updates.isExecutive === true || updates.isManagerLabel === true) {
@@ -685,55 +749,6 @@ export default function App() {
     setSelectedId(null);
   };
 
-  const handleSwapEmployees = (id1: string, id2: string) => {
-    const emp1 = employees.find(e => e.id === id1);
-    const emp2 = employees.find(e => e.id === id2);
-    
-    if (!emp1 || !emp2 || emp1.parentId !== emp2.parentId) return;
-    
-    // Get all siblings to establish current order
-    const siblings = employees
-      .filter(e => e.parentId === emp1.parentId)
-      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-      
-    const idx1 = siblings.findIndex(e => e.id === id1);
-    const idx2 = siblings.findIndex(e => e.id === id2);
-    
-    if (idx1 === -1 || idx2 === -1) return;
-    
-    const nextEmployees = [...employees];
-    // Assign sort orders based on current index if not present
-    siblings.forEach((s, i) => {
-      const empIdx = nextEmployees.findIndex(e => e.id === s.id);
-      if (empIdx !== -1) {
-        nextEmployees[empIdx] = { ...nextEmployees[empIdx], sortOrder: i };
-      }
-    });
-    
-    // Swap sort orders
-    const empIdx1 = nextEmployees.findIndex(e => e.id === id1);
-    const empIdx2 = nextEmployees.findIndex(e => e.id === id2);
-    const tempOrder = nextEmployees[empIdx1].sortOrder;
-    nextEmployees[empIdx1].sortOrder = nextEmployees[empIdx2].sortOrder;
-    nextEmployees[empIdx2].sortOrder = tempOrder;
-    
-    // Validate if swap exceeds canvas width
-    const nextTree = buildOrgTree(nextEmployees, { type: 'main' });
-    if (nextTree) {
-      const { width: treeWidth, height: treeHeight } = calculateTreeSize(nextTree);
-      if (treeWidth > settings.canvasWidth * CM_TO_PX) {
-        alert('水平人數達上限，請調整部屬排列方式');
-        return;
-      }
-      if (treeHeight > settings.canvasHeight * CM_TO_PX) {
-        alert('垂直人數達上限，請調整排列人數');
-        return;
-      }
-    }
-
-    setEmployees(nextEmployees);
-  };
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -784,12 +799,8 @@ export default function App() {
   };
 
   const handleSaveSettings = () => {
-    const newDepts = tempSettings.departments.split('\n').map(s => {
-      const [name, code] = s.split(',').map(part => part.trim());
-      return { name, code: code || '' };
-    }).filter(d => d.name !== '');
-    
-    const newTitles = tempSettings.titles.split('\n').map(s => s.trim()).filter(s => s !== '');
+    const newDepts = tempSettings.departments.filter(d => d.name.trim() !== '');
+    const newTitles = tempSettings.titles.filter(s => s.trim() !== '');
     const newMemberTypes = tempSettings.memberTypes.filter(mt => mt.name.trim() !== '');
     
     const oldDepts = settings.departments;
@@ -843,7 +854,8 @@ export default function App() {
       canvasHeight: Number(tempSettings.canvasHeight) || 19.05,
       showDepartmentCodes: tempSettings.showDepartmentCodes,
       showEmployeeIds: tempSettings.showEmployeeIds,
-      maxDisplayLevels: tempSettings.maxDisplayLevels
+      maxDisplayLevels: tempSettings.maxDisplayLevels,
+      companyName: tempSettings.companyName
     });
     setShowSettings(false);
   };
@@ -981,7 +993,7 @@ export default function App() {
       const data = await loadProject(file);
       setEmployees(data.employees);
       setAnnotations(data.annotations || []);
-      if (data.settings) setSettings(data.settings);
+      if (data.settings) setSettings({ ...INITIAL_SETTINGS, ...data.settings });
       if (data.orgName) setOrgName(data.orgName);
       if (data.versionDate) setVersionDate(data.versionDate);
       setViewMode({ type: 'main' });
@@ -1027,13 +1039,30 @@ export default function App() {
 
   const uniqueEmployeeCount = useMemo(() => {
     const personIds = new Set<string>();
-    employees.forEach(emp => {
+    
+    let targetEmployees = employees;
+    if (viewMode.type === 'sub') {
+      const descendantIds = new Set<string>();
+      descendantIds.add(viewMode.rootId);
+      const findDescendants = (id: string) => {
+        employees.forEach(emp => {
+          if (emp.parentId === id) {
+            descendantIds.add(emp.id);
+            findDescendants(emp.id);
+          }
+        });
+      };
+      findDescendants(viewMode.rootId);
+      targetEmployees = employees.filter(e => descendantIds.has(e.id));
+    }
+
+    targetEmployees.forEach(emp => {
       // If there's a proxy, the "active person" is the proxy
       // Otherwise, it's the employee themselves
       personIds.add(emp.proxyId || emp.id);
     });
     return personIds.size;
-  }, [employees]);
+  }, [employees, viewMode]);
 
   const cumulativeLevelCounts = useMemo(() => {
     const counts: Record<number, number> = {};
@@ -1076,74 +1105,79 @@ export default function App() {
         className="bg-white border-r border-[#141414] flex flex-col shrink-0"
         style={{ width: `${sidebarWidth}px` }}
       >
-        <div className="p-6 border-b border-[#141414] flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-serif italic font-bold tracking-tight mb-1">組織圖 Pro</h1>
-            <p className="text-[10px] uppercase tracking-widest opacity-50">離線單機版 | Corporate Hierarchy Builder</p>
-          </div>
-          <div className="flex items-center gap-1">
-            <button 
-              onClick={() => setShowStorage(true)}
-              className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-              title="存儲管理"
-            >
-              <Database size={18} />
-            </button>
-            <button 
-              onClick={() => {
-                setTempSettings({
-                  departments: settings.departments.map(d => `${d.name}${d.code ? `,${d.code}` : ''}`).join('\n'),
-                  titles: settings.titles.join('\n'),
-                  memberTypes: settings.memberTypes.map(mt => ({ ...mt })),
-                  canvasWidth: settings.canvasWidth,
-                  canvasHeight: settings.canvasHeight,
-                  showDepartmentCodes: settings.showDepartmentCodes,
-                  showEmployeeIds: settings.showEmployeeIds,
-                  maxDisplayLevels: settings.maxDisplayLevels || 0
-                });
-                setShowSettings(true);
-              }}
-              className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-              title="系統設定"
-            >
-              <SettingsIcon size={18} />
-            </button>
-          </div>
+        <div className="p-4 border-b border-[#141414]">
+          <h1 className="text-xl font-serif italic font-bold tracking-tight mb-0.5">OrgChart Pro</h1>
+          <p className="text-[11px] uppercase tracking-widest opacity-50">設計者：Star Chen</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
-          {/* Project Controls */}
-          <div className="space-y-2">
-            <h3 className="text-[10px] font-bold uppercase tracking-widest opacity-40 px-2">專案管理</h3>
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Top Section: System Settings, Project Management, Navigation Menu, Export */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-4 border-b border-black/10">
+            {/* System Settings */}
+            <div className="space-y-1">
+              <h3 className="text-[12px] font-bold uppercase tracking-widest opacity-40 px-2">系統設定</h3>
+              <div className="grid grid-cols-2 gap-1">
+                <button 
+                  onClick={() => setShowStorage(true)}
+                  className="flex items-center justify-center gap-1 p-1.5 border border-black/10 hover:bg-black/5 rounded-lg transition-colors text-[11px] uppercase font-bold"
+                >
+                  <Database size={12} />
+                  存檔
+                </button>
+                <button 
+                  onClick={() => {
+                    setTempSettings({
+                      departments: settings.departments.map(d => ({ ...d })),
+                      titles: [...settings.titles],
+                      memberTypes: settings.memberTypes.map(mt => ({ ...mt })),
+                      canvasWidth: settings.canvasWidth,
+                      canvasHeight: settings.canvasHeight,
+                      showDepartmentCodes: settings.showDepartmentCodes,
+                      showEmployeeIds: settings.showEmployeeIds,
+                      companyName: settings.companyName || ''
+                    });
+                    setShowSettings(true);
+                  }}
+                  className="flex items-center justify-center gap-1 p-1.5 border border-black/10 hover:bg-black/5 rounded-lg transition-colors text-[11px] uppercase font-bold"
+                >
+                  <SettingsIcon size={12} />
+                  設定
+                </button>
+              </div>
+            </div>
+
+            {/* Project Controls */}
+            <div className="space-y-1">
+              <h3 className="text-[12px] font-bold uppercase tracking-widest opacity-40 px-2">專案管理</h3>
             <div className="grid grid-cols-3 gap-1">
               <button 
                 onClick={() => setShowNewConfirm(true)}
-                className="flex flex-col items-center justify-center gap-1 p-2 border border-black/10 hover:bg-black/5 rounded-lg transition-colors"
+                className="flex flex-col items-center justify-center gap-0.5 p-1.5 border border-black/10 hover:bg-black/5 rounded-lg transition-colors"
                 title="開新專案"
               >
-                <FilePlus size={16} />
-                <span className="text-[9px] uppercase font-bold">新建</span>
+                <FilePlus size={14} />
+                <span className="text-[11px] uppercase font-bold">新建</span>
               </button>
               <button 
                 onClick={handleSaveProject}
-                className="flex flex-col items-center justify-center gap-1 p-2 border border-black/10 hover:bg-black/5 rounded-lg transition-colors"
+                className="flex flex-col items-center justify-center gap-0.5 p-1.5 border border-black/10 hover:bg-black/5 rounded-lg transition-colors"
                 title="另存專案"
               >
-                <Save size={16} />
-                <span className="text-[9px] uppercase font-bold">另存</span>
+                <Save size={14} />
+                <span className="text-[11px] uppercase font-bold">另存</span>
               </button>
-              <label className="flex flex-col items-center justify-center gap-1 p-2 border border-black/10 hover:bg-black/5 rounded-lg transition-colors cursor-pointer" title="讀取專案">
-                <FolderOpen size={16} />
-                <span className="text-[9px] uppercase font-bold">讀取</span>
+              <label className="flex flex-col items-center justify-center gap-0.5 p-1.5 border border-black/10 hover:bg-black/5 rounded-lg transition-colors cursor-pointer" title="讀取專案">
+                <FolderOpen size={14} />
+                <span className="text-[11px] uppercase font-bold">讀取</span>
                 <input type="file" accept=".json" className="hidden" onChange={handleLoadProject} />
               </label>
             </div>
 
             {/* Excel Actions moved here */}
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <div className="flex flex-col gap-1">
-                <label className="flex items-center justify-center gap-2 p-2 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-xs font-medium uppercase tracking-wider">
-                  <Upload size={14} />
+            <div className="grid grid-cols-2 gap-1 mt-1">
+              <div className="flex flex-col gap-0.5">
+                <label className="flex items-center justify-center gap-1.5 p-1.5 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[11px] font-bold uppercase tracking-wider h-[32px]">
+                  <Upload size={12} />
                   匯入 Excel
                   <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} />
                 </label>
@@ -1154,85 +1188,22 @@ export default function App() {
                   下載範例檔
                 </button>
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-0.5">
                 <button 
                   onClick={() => exportToExcel(employees, orgName, versionDate, settings.departments, settings.titles)}
-                  className="flex items-center justify-center gap-2 p-2 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-xs font-medium uppercase tracking-wider h-[34px]"
+                  className="flex items-center justify-center gap-1.5 p-1.5 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[11px] font-bold uppercase tracking-wider h-[32px]"
                 >
-                  <Download size={14} />
+                  <Download size={12} />
                   匯出 Excel
                 </button>
               </div>
             </div>
-          </div>
-
-          <button 
-            onClick={handleAddEmployee}
-            className="w-full flex items-center justify-center gap-2 p-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition-all shadow-lg shadow-indigo-200 font-bold uppercase tracking-widest text-[10px]"
-          >
-            <Plus size={16} />
-            新增成員
-          </button>
-
-          {/* Navigation Menu */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between px-2">
-              <h3 className="text-[10px] font-bold uppercase tracking-widest opacity-40">導覽選單</h3>
-              <button 
-                onClick={handleRefresh}
-                className="p-1 hover:bg-black/5 rounded transition-colors opacity-40 hover:opacity-100"
-                title="重新整理所有組織表"
-              >
-                <RefreshCw key={refreshKey} size={12} className={refreshKey > 0 ? 'animate-spin-once' : ''} />
-              </button>
-            </div>
-            <div className="space-y-1">
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setViewMode({ type: 'table' })}
-                  className={`w-full flex items-center gap-3 p-2 rounded-lg transition-all text-sm ${
-                    viewMode.type === 'table' 
-                      ? 'bg-[#141414] text-white shadow-lg' 
-                      : 'hover:bg-black/5 text-black/70'
-                  }`}
-                >
-                  <LayoutGrid size={16} />
-                  <span className="font-medium">人員設定總表</span>
-                </button>
-                <button 
-                  onClick={() => setViewMode({ type: 'main' })}
-                  className={`w-full flex items-center gap-3 p-2 rounded-lg transition-all text-sm ${
-                    viewMode.type === 'main' 
-                      ? 'bg-[#141414] text-white shadow-lg' 
-                      : 'hover:bg-black/5 text-black/70'
-                  }`}
-                >
-                  <LayoutGrid size={16} />
-                  <span className="font-medium">首頁</span>
-                </button>
-              </div>
-              
-              {managerTree.length > 0 && (
-                <div className="pl-4 space-y-1 border-l border-black/10 ml-4 mt-2">
-                  <p className="text-[9px] font-bold uppercase tracking-tighter opacity-30 mb-1">子分頁</p>
-                  {managerTree.map(manager => (
-                    <ManagerNavItem 
-                      key={manager.id} 
-                      manager={manager} 
-                      viewMode={viewMode}
-                      setViewMode={setViewMode}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
 
           {/* Actions */}
-          <div className="space-y-4">
+          <div className="space-y-2">
             <div className="flex flex-col gap-1">
-              <div className="mb-1">
-                <label className="text-[9px] font-bold uppercase tracking-widest opacity-40 block mb-1">指定匯出頁面</label>
+              <div className="mb-0.5">
+                <label className="text-[10px] font-bold uppercase tracking-widest opacity-40 block mb-0.5">指定匯出頁面</label>
                 <select 
                   value={exportViewId}
                   onChange={(e) => setExportViewId(e.target.value)}
@@ -1247,26 +1218,30 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1">
                 <button 
                   onClick={handleExportPPT}
-                  className="flex items-center justify-center gap-2 p-2 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[10px] font-medium uppercase tracking-wider h-[34px]"
+                  className="flex items-center justify-center gap-1.5 p-1.5 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[11px] font-bold uppercase tracking-wider h-[32px]"
                 >
-                  <Download size={14} />
+                  <Download size={12} />
                   匯出 PPT
                 </button>
                 <button 
                   onClick={handleExportPDF}
                   disabled={isExportingPDF}
-                  className={`flex items-center justify-center gap-2 p-2 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[10px] font-medium uppercase tracking-wider h-[34px] ${isExportingPDF ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className={`flex items-center justify-center gap-1.5 p-1.5 border border-[#141414] hover:bg-[#141414] hover:text-white transition-colors cursor-pointer text-[11px] font-bold uppercase tracking-wider h-[32px] ${isExportingPDF ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  {isExportingPDF ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                  {isExportingPDF ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
                   匯出 PDF
                 </button>
               </div>
             </div>
           </div>
+        </div>
+      </div>
 
+        {/* Bottom Section: Add Subordinate, Member Attributes */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-4 bg-gray-50/30">
           <AnimatePresence mode="wait">
             {selectedEmployee ? (
               <motion.div 
@@ -1274,130 +1249,168 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="space-y-2 pt-4 border-t border-black/10"
+                className="space-y-3"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-xs font-bold uppercase tracking-widest opacity-50">編輯資料</h3>
+                <div className="flex gap-1">
                   <button 
-                    onClick={() => handleDeleteEmployee(selectedEmployee.id)}
-                    className="text-red-500 hover:text-red-700 transition-colors"
+                    onClick={handleAddEmployee}
+                    className="flex-1 flex items-center justify-center gap-1.5 p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all shadow-lg shadow-indigo-200 font-bold uppercase tracking-widest text-[11px]"
                   >
-                    <Trash2 size={16} />
+                    <Plus size={14} />
+                    新增部屬
                   </button>
+                  <select
+                    value={defaultAddType}
+                    onChange={(e) => setDefaultAddType(e.target.value)}
+                    className="w-20 p-1 text-[10px] border border-black/10 rounded bg-white/50 outline-none font-bold"
+                    title="設定新增部屬的預設類型"
+                  >
+                    {settings.memberTypes.map(mt => (
+                      <option key={mt.name} value={mt.name}>{mt.name}</option>
+                    ))}
+                  </select>
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="relative group mb-3">
-                    <div className="w-20 h-20 mx-auto rounded-full bg-gray-100 border border-black/5 overflow-hidden flex items-center justify-center relative">
-                      {selectedEmployee.photo ? (
-                        <img src={selectedEmployee.photo} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <ImageIcon className="text-black/20" size={28} />
-                      )}
-                      <label className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity">
-                        <Upload className="text-white" size={18} />
-                        <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
-                      </label>
+                <button 
+                  onClick={() => setIsSwapMode(!isSwapMode)}
+                  className={`w-full flex items-center justify-center gap-1.5 p-2 rounded-lg transition-all shadow-lg font-bold uppercase tracking-widest text-[11px] ${
+                    isSwapMode 
+                      ? 'bg-orange-500 hover:bg-orange-600 text-white shadow-orange-200 animate-pulse' 
+                      : 'bg-white border border-black/10 hover:bg-black/5 text-black/70'
+                  }`}
+                >
+                  <RefreshCw size={14} className={isSwapMode ? 'animate-spin' : ''} />
+                  調整順序
+                </button>
+
+                <div className="space-y-1.5 pt-3 border-t border-black/10">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest opacity-50">成員個人屬性</h3>
+                    <button 
+                      onClick={() => handleDeleteEmployee(selectedEmployee.id)}
+                      className="text-red-500 hover:text-red-700 transition-colors p-1"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex gap-3 items-start">
+                    <div className="relative group shrink-0">
+                      <div className="w-16 h-16 rounded-full bg-gray-100 border border-black/5 overflow-hidden flex items-center justify-center relative">
+                        {selectedEmployee.photo ? (
+                          <img src={selectedEmployee.photo} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <ImageIcon className="text-black/20" size={24} />
+                        )}
+                        <label className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity">
+                          <Upload className="text-white" size={16} />
+                          <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="space-y-0">
+                        <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">姓名</label>
+                        <input 
+                          type="text" 
+                          value={selectedEmployee.name}
+                          onChange={e => handleUpdateEmployee({ name: e.target.value })}
+                          className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent text-[13px]"
+                          placeholder="未設定"
+                        />
+                      </div>
+                      <div className="space-y-0">
+                        <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">工號</label>
+                        <input 
+                          type="text" 
+                          value={selectedEmployee.employeeId || ''}
+                          onChange={e => handleUpdateEmployee({ employeeId: e.target.value })}
+                          className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent text-[13px]"
+                          placeholder="未設定"
+                        />
+                      </div>
+                      <div className="space-y-0">
+                        <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">職稱</label>
+                        <select 
+                          value={selectedEmployee.title}
+                          onChange={e => handleUpdateEmployee({ title: e.target.value })}
+                          className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-[13px]"
+                        >
+                          {settings.titles.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">姓名</label>
-                    <input 
-                      type="text" 
-                      value={selectedEmployee.name}
-                      onChange={e => handleUpdateEmployee({ name: e.target.value })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent text-sm"
-                    />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-0">
+                      <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">部門</label>
+                      <select 
+                        value={selectedEmployee.department}
+                        onChange={e => handleUpdateEmployee({ department: e.target.value })}
+                        className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-[13px]"
+                      >
+                        {settings.departments.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-0">
+                      <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">部門代號</label>
+                      <input 
+                        type="text" 
+                        value={selectedEmployee.departmentCode || ''}
+                        readOnly
+                        className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-gray-50 text-gray-500 text-[13px]"
+                        placeholder="自動連動"
+                      />
+                    </div>
                   </div>
 
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">工號</label>
-                    <input 
-                      type="text" 
-                      value={selectedEmployee.employeeId || ''}
-                      onChange={e => handleUpdateEmployee({ employeeId: e.target.value })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent text-sm"
-                      placeholder="未設定"
-                    />
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">職稱</label>
-                    <select 
-                      value={selectedEmployee.title}
-                      onChange={e => handleUpdateEmployee({ title: e.target.value })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-sm"
-                    >
-                      {settings.titles.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">成員類型 (Member Type)</label>
-                    <select 
-                      value={selectedEmployee.memberType || ''}
-                      onChange={e => handleUpdateEmployee({ memberType: e.target.value })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-sm"
-                    >
-                      <option value="">請選擇類型</option>
-                      {settings.memberTypes.map(mt => (
-                        <option key={mt.name} value={mt.name}>{mt.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">部門</label>
-                    <select 
-                      value={selectedEmployee.department}
-                      onChange={e => handleUpdateEmployee({ department: e.target.value })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-sm"
-                    >
-                      {settings.departments.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">部門代號</label>
-                    <input 
-                      type="text" 
-                      value={selectedEmployee.departmentCode || ''}
-                      readOnly
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-gray-50 text-gray-500 text-sm"
-                      placeholder="自動連動"
-                    />
-                  </div>
-
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">直屬主管</label>
-                    <select 
-                      value={selectedEmployee.parentId || ''}
-                      onChange={e => handleUpdateEmployee({ parentId: e.target.value || undefined })}
-                      className="w-full p-1 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-sm"
-                    >
-                      <option value="">無 (頂層)</option>
-                      {employees
-                        .filter(e => {
-                          if (e.id === selectedEmployee.id) return false;
-                          if (viewMode.type === 'sub') {
-                            const subTree = buildOrgTree(employees, viewMode);
-                            if (subTree) {
-                              const descendantIds = new Set<string>();
-                              const collectIds = (node: OrgNode) => {
-                                descendantIds.add(node.id);
-                                node.children?.forEach(collectIds);
-                              };
-                              collectIds(subTree);
-                              return descendantIds.has(e.id);
-                            }
-                          }
-                          return true;
-                        })
-                        .map(e => (
-                          <option key={e.id} value={e.id}>{e.name} ({e.title})</option>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-0">
+                      <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">類型</label>
+                      <select 
+                        value={selectedEmployee.memberType || ''}
+                        onChange={e => handleUpdateEmployee({ memberType: e.target.value })}
+                        className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-[13px]"
+                      >
+                        <option value="">請選擇類型</option>
+                        {settings.memberTypes.map(mt => (
+                          <option key={mt.name} value={mt.name}>{mt.name}</option>
                         ))}
-                    </select>
+                      </select>
+                    </div>
+                    <div className="space-y-0">
+                      <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">直屬主管</label>
+                      <select 
+                        value={selectedEmployee.parentId || ''}
+                        onChange={e => handleUpdateEmployee({ parentId: e.target.value || undefined })}
+                        className="w-full p-0.5 border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none text-[13px]"
+                      >
+                        <option value="">無 (頂層)</option>
+                        {employees
+                          .filter(e => {
+                            if (e.id === selectedEmployee.id) return false;
+                            if (viewMode.type === 'sub') {
+                              const subTree = buildOrgTree(employees, viewMode);
+                              if (subTree) {
+                                const descendantIds = new Set<string>();
+                                const collectIds = (node: OrgNode) => {
+                                  descendantIds.add(node.id);
+                                  node.children?.forEach(collectIds);
+                                };
+                                collectIds(subTree);
+                                return descendantIds.has(e.id);
+                              }
+                            }
+                            return true;
+                          })
+                          .map(e => (
+                            <option key={e.id} value={e.id}>{e.name} ({e.title})</option>
+                          ))}
+                      </select>
+                    </div>
                   </div>
 
                   <div className="flex flex-col gap-1 py-1">
@@ -1409,8 +1422,8 @@ export default function App() {
                         onChange={e => handleUpdateEmployee({ isExecutive: e.target.checked })}
                         className="w-3.5 h-3.5 accent-[#141414]"
                       />
-                      <label htmlFor="isExecutive" className="text-[9px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
-                        設定為經營階層 (Executive)
+                      <label htmlFor="isExecutive" className="text-[11px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
+                        經營階層
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1421,8 +1434,8 @@ export default function App() {
                         onChange={e => handleUpdateEmployee({ canBeProxy: e.target.checked })}
                         className="w-3.5 h-3.5 accent-[#141414]"
                       />
-                      <label htmlFor="canBeProxy" className="text-[9px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
-                        可被選擇作為代理人
+                      <label htmlFor="canBeProxy" className="text-[11px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
+                        代理人資料庫
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1433,8 +1446,8 @@ export default function App() {
                         onChange={e => handleUpdateEmployee({ isManagerLabel: e.target.checked })}
                         className="w-3.5 h-3.5 accent-[#141414]"
                       />
-                      <label htmlFor="isManagerLabel" className="text-[9px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
-                        設定為職稱標籤 (不計入編制)
+                      <label htmlFor="isManagerLabel" className="text-[11px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
+                        主管標籤
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1451,8 +1464,8 @@ export default function App() {
                         }}
                         className="w-3.5 h-3.5 accent-[#141414]"
                       />
-                      <label htmlFor="isSubPage" className="text-[9px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
-                        設定為子分頁 (Sub-page)
+                      <label htmlFor="isSubPage" className="text-[11px] font-bold uppercase tracking-widest opacity-60 cursor-pointer">
+                        展開子分頁
                       </label>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1462,26 +1475,33 @@ export default function App() {
                         disabled={(() => {
                           if (!selectedEmployee.parentId) return true;
                           const parent = employees.find(e => e.id === selectedEmployee.parentId);
-                          return !parent?.isManagerLabel;
+                          if (!parent?.isManagerLabel) return true;
+                          // Check if has subordinates
+                          return employees.some(e => e.parentId === selectedEmployee.id);
                         })()}
                         checked={selectedEmployee.isSpecialAssistant || false}
                         onChange={e => handleUpdateEmployee({ isSpecialAssistant: e.target.checked })}
                         className="w-3.5 h-3.5 accent-[#141414] disabled:opacity-30"
                       />
-                      <label htmlFor="isSpecialAssistant" className={`text-[9px] font-bold uppercase tracking-widest opacity-60 cursor-pointer ${(!selectedEmployee.parentId || !employees.find(e => e.id === selectedEmployee.parentId)?.isManagerLabel) ? 'cursor-not-allowed' : ''}`}>
-                        設定為特助 (Special Asst)
+                      <label htmlFor="isSpecialAssistant" className={`text-[11px] font-bold uppercase tracking-widest opacity-60 cursor-pointer ${(() => {
+                        if (!selectedEmployee.parentId) return true;
+                        const parent = employees.find(e => e.id === selectedEmployee.parentId);
+                        if (!parent?.isManagerLabel) return true;
+                        return employees.some(e => e.parentId === selectedEmployee.id);
+                      })() ? 'cursor-not-allowed opacity-30' : ''}`}>
+                        擔任特助
                       </label>
                     </div>
                   </div>
 
                   {selectedEmployee.isManagerLabel && (
-                    <div className="space-y-1.5 mt-1 p-2 bg-black/5 rounded-lg border border-black/5">
-                      <div className="space-y-0.5">
+                    <div className="space-y-1 mt-0.5 p-1.5 bg-black/5 rounded-lg border border-black/5">
+                      <div className="space-y-0">
                         <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">代理人 (Proxy)</label>
                         <select 
                           value={selectedEmployee.proxyId || ''}
                           onChange={e => handleUpdateEmployee({ proxyId: e.target.value || undefined })}
-                          className="w-full p-1 text-xs border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none"
+                          className="w-full p-0.5 text-[12px] border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none"
                         >
                           <option value="">無代理人</option>
                           {employees
@@ -1492,12 +1512,12 @@ export default function App() {
                         </select>
                       </div>
 
-                      <div className="space-y-0.5">
+                      <div className="space-y-0">
                         <label className="text-[10px] font-bold uppercase tracking-widest opacity-40">部屬排列人數 (每列)</label>
                         <select 
                           value={selectedEmployee.subordinatesPerRow || 5}
                           onChange={e => handleUpdateEmployee({ subordinatesPerRow: parseInt(e.target.value) })}
-                          className="w-full p-1 text-xs border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none"
+                          className="w-full p-0.5 text-[12px] border-b border-black/10 focus:border-black outline-none bg-transparent appearance-none"
                         >
                           {[1, 2, 3, 4, 5, 6].map(num => (
                             <option key={num} value={num}>{num} 人</option>
@@ -1509,30 +1529,89 @@ export default function App() {
                 </div>
               </motion.div>
             ) : (
-              <div className="h-64 flex flex-col items-center justify-center text-center p-6">
-                <div className="w-16 h-16 bg-black/5 rounded-full flex items-center justify-center mb-4 opacity-20">
-                  <Users size={32} />
+              <motion.div
+                key="nav-menu"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="space-y-4"
+              >
+                {/* Navigation Menu */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-2">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest opacity-40">導覽選單</h3>
+                    <button 
+                      onClick={handleRefresh}
+                      className="p-1 hover:bg-black/5 rounded transition-colors opacity-40 hover:opacity-100"
+                      title="重新整理所有組織表"
+                    >
+                      <RefreshCw key={refreshKey} size={10} className={refreshKey > 0 ? 'animate-spin-once' : ''} />
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="space-y-1">
+                      <button 
+                        onClick={() => setViewMode({ type: 'table' })}
+                        className={`w-full flex items-center gap-2 p-2 rounded-lg transition-all text-[13px] ${
+                          viewMode.type === 'table' 
+                            ? 'bg-[#141414] text-white shadow-lg' 
+                            : 'bg-white border border-black/5 hover:bg-black/5 text-black/70'
+                        }`}
+                      >
+                        <LayoutGrid size={14} />
+                        <span className="font-medium">人員設定總表</span>
+                      </button>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setViewMode({ type: 'main' })}
+                          className={`flex-1 flex items-center gap-2 p-2 rounded-lg transition-all text-[13px] ${
+                            viewMode.type === 'main' 
+                              ? 'bg-[#141414] text-white shadow-lg' 
+                              : 'bg-white border border-black/5 hover:bg-black/5 text-black/70'
+                          }`}
+                        >
+                          <LayoutGrid size={14} />
+                          <span className="font-medium">首頁</span>
+                        </button>
+                        <input 
+                          type="text"
+                          value={settings.companyName || ''}
+                          onChange={(e) => setSettings(prev => ({ ...prev, companyName: e.target.value }))}
+                          placeholder="公司名稱"
+                          className="w-24 p-1.5 text-[11px] border border-black/10 rounded outline-none focus:border-black/30 bg-white text-black shadow-sm"
+                          title="設定顯示在首頁右上角的公司名稱"
+                        />
+                      </div>
+                    </div>
+                    
+                    {managerTree.length > 0 && (
+                      <div className="pl-3 space-y-1 border-l-2 border-black/5 ml-3 mt-2">
+                        <p className="text-[9px] font-bold uppercase tracking-widest opacity-30 mb-1">子分頁</p>
+                        {managerTree.map(manager => (
+                          <ManagerNavItem 
+                            key={manager.id} 
+                            manager={manager} 
+                            viewMode={viewMode}
+                            setViewMode={setViewMode}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <p className="text-xs font-medium uppercase tracking-widest opacity-30 mb-4">請選擇或新增成員</p>
-                <button 
-                  onClick={handleAddEmployee}
-                  className="flex items-center gap-2 px-4 py-2 border border-black/10 hover:bg-black/5 rounded-lg transition-colors text-[10px] font-bold uppercase tracking-widest opacity-60 hover:opacity-100"
-                >
-                  <Plus size={14} />
-                  立即新增成員
-                </button>
-              </div>
+              </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        <div className="p-4 bg-gray-50 border-t border-[#141414]">
+        <div className="p-3 bg-gray-50 border-t border-[#141414]">
           <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-widest opacity-50">
             <span>Total Members</span>
             <span>{uniqueEmployeeCount}</span>
           </div>
         </div>
-      </aside>
+      </div>
+    </aside>
 
       {/* Resizable Divider */}
       <div 
@@ -1611,6 +1690,9 @@ export default function App() {
                 setEmployees={setEmployees}
                 departments={settings.departments}
                 titles={settings.titles}
+                selectedId={selectedId}
+                setSelectedId={setSelectedId}
+                onGoHome={() => setViewMode({ type: 'main' })}
               />
             ) : orgTree ? (
               <OrgChart 
@@ -1618,9 +1700,8 @@ export default function App() {
                 data={orgTree} 
                 employees={employees}
                 memberTypes={settings.memberTypes}
-                onNodeClick={(node) => setSelectedId(node.id)} 
+                onNodeClick={handleNodeClick} 
                 onViewSubChart={(nodeId) => setViewMode({ type: 'sub', rootId: nodeId })}
-                onSwapEmployees={handleSwapEmployees}
                 selectedId={selectedId}
                 onDeselect={() => setSelectedId(null)}
                 width={settings.canvasWidth * CM_TO_PX}
@@ -1628,6 +1709,7 @@ export default function App() {
                 showDepartmentCodes={settings.showDepartmentCodes}
                 showEmployeeIds={settings.showEmployeeIds}
                 isSubChart={viewMode.type === 'sub'}
+                companyName={settings.companyName}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-white/50 rounded-xl border-2 border-dashed border-black/10">
@@ -1893,38 +1975,104 @@ export default function App() {
               </div>
               
               <div className="p-6 space-y-6 overflow-y-auto">
-                <div className="p-4 bg-blue-50 rounded-xl border border-blue-100 space-y-2">
-                  <h4 className="text-xs font-bold text-blue-800 flex items-center gap-1">
-                    <Download size={14} /> 離線單機版使用說明
-                  </h4>
-                  <p className="text-[10px] text-blue-700 leading-relaxed">
-                    本工具已優化為「單一 HTML 檔案」結構。您可以透過瀏覽器的「另存網頁」功能（Ctrl+S），將此頁面儲存為「僅 HTML」格式。
-                    儲存後的檔案即可在無網路環境下直接雙擊開啟使用。所有資料（包含照片）皆可透過「另存專案」功能匯出為 JSON 檔帶著走。
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest opacity-50">部門清單 (每行一個: 名稱,代號)</label>
-                  <textarea 
-                    className="w-full h-32 p-3 border border-black/10 rounded-xl focus:border-black outline-none font-mono text-sm"
-                    placeholder="例如: 人事部,HR"
-                    value={tempSettings.departments}
-                    onChange={(e) => setTempSettings({ ...tempSettings, departments: e.target.value })}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-widest opacity-50">職稱清單 (每行一個)</label>
-                  <textarea 
-                    className="w-full h-32 p-3 border border-black/10 rounded-xl focus:border-black outline-none font-mono text-sm"
-                    value={tempSettings.titles}
-                    onChange={(e) => setTempSettings({ ...tempSettings, titles: e.target.value })}
-                  />
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold uppercase tracking-widest opacity-50">部門清單</label>
+                    <button 
+                      onClick={() => setTempSettings({
+                        ...tempSettings,
+                        departments: [...tempSettings.departments, { name: '', code: '' }]
+                      })}
+                      className="p-1 hover:bg-black/5 rounded-full text-indigo-600"
+                      title="新增部門"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                    {tempSettings.departments.map((dept, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input 
+                          type="text"
+                          className="flex-1 p-2 border border-black/10 rounded-lg focus:border-black outline-none text-sm"
+                          placeholder="部門名稱"
+                          value={dept.name}
+                          onChange={(e) => {
+                            const newDepts = [...tempSettings.departments];
+                            newDepts[idx].name = e.target.value;
+                            setTempSettings({ ...tempSettings, departments: newDepts });
+                          }}
+                        />
+                        <input 
+                          type="text"
+                          className="w-24 p-2 border border-black/10 rounded-lg focus:border-black outline-none text-sm font-mono"
+                          placeholder="代號"
+                          value={dept.code}
+                          onChange={(e) => {
+                            const newDepts = [...tempSettings.departments];
+                            newDepts[idx].code = e.target.value;
+                            setTempSettings({ ...tempSettings, departments: newDepts });
+                          }}
+                        />
+                        <button 
+                          onClick={() => {
+                            const newDepts = tempSettings.departments.filter((_, i) => i !== idx);
+                            setTempSettings({ ...tempSettings, departments: newDepts });
+                          }}
+                          className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold uppercase tracking-widest opacity-50">成員類型與背景顏色</label>
+                    <label className="text-xs font-bold uppercase tracking-widest opacity-50">職稱清單</label>
+                    <button 
+                      onClick={() => setTempSettings({
+                        ...tempSettings,
+                        titles: [...tempSettings.titles, '']
+                      })}
+                      className="p-1 hover:bg-black/5 rounded-full text-indigo-600"
+                      title="新增職稱"
+                    >
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                    {tempSettings.titles.map((title, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input 
+                          type="text"
+                          className="flex-1 p-2 border border-black/10 rounded-lg focus:border-black outline-none text-sm"
+                          placeholder="職稱名稱"
+                          value={title}
+                          onChange={(e) => {
+                            const newTitles = [...tempSettings.titles];
+                            newTitles[idx] = e.target.value;
+                            setTempSettings({ ...tempSettings, titles: newTitles });
+                          }}
+                        />
+                        <button 
+                          onClick={() => {
+                            const newTitles = tempSettings.titles.filter((_, i) => i !== idx);
+                            setTempSettings({ ...tempSettings, titles: newTitles });
+                          }}
+                          className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold uppercase tracking-widest opacity-50">類型與背景顏色</label>
                     <button 
                       onClick={() => setTempSettings({
                         ...tempSettings,

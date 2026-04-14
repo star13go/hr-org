@@ -43,6 +43,7 @@ export interface AppSettings {
   showDepartmentCodes: boolean;
   showEmployeeIds: boolean;
   memberTypes: MemberType[];
+  companyName?: string;
 }
 
 export interface Annotation {
